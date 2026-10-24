@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="kk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0e0e0e">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon-192.png">
+<title>Шпион Онлайн</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:#0e0e0e;color:#f2f2f2;font-family:system-ui,sans-serif;display:flex;justify-content:center}
+#app{width:100%;max-width:480px;min-height:100vh;padding:16px;display:flex;flex-direction:column;gap:10px}
+#view{flex:1;display:flex;flex-direction:column;justify-content:center;gap:10px}
+#dock{position:sticky;bottom:0;background:#0e0e0e;padding-top:6px;display:flex;flex-direction:column;gap:6px}
+h1{text-align:center;margin:0;font-size:34px;letter-spacing:3px}
+.card{background:#1c1c1c;border:1px solid #333;border-radius:14px;padding:14px}
+.row{display:flex;justify-content:space-between;align-items:center;font-size:18px}
+.row2{display:flex;gap:6px}
+.num{display:flex;align-items:center;gap:14px}
+.num button{width:42px;height:42px;padding:0;font-size:22px}
+button{background:#2a2a2a;color:#f2f2f2;border:1px solid #444;border-radius:12px;padding:13px;font-size:17px;font-family:inherit}
+button:disabled{opacity:.4}
+button.main{background:#f2f2f2;color:#0e0e0e;border:0;font-weight:700}
+input{flex:1;width:100%;background:#1c1c1c;border:1px solid #444;color:#f2f2f2;border-radius:12px;padding:12px;font-size:16px;font-family:inherit}
+.muted{color:#8a8a8a;font-size:15px}
+.big{font-size:38px;font-weight:700;word-break:break-word}
+.mid{font-size:24px;font-weight:600;word-break:break-word}
+.time{font-size:80px;font-weight:700;font-variant-numeric:tabular-nums}
+.tap{display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;gap:6px}
+.pl{display:flex;align-items:center;gap:10px;padding:6px 0}.pl span:nth-child(2){flex:1}
+.ava{width:44px;height:44px;border-radius:50%;background:#2a2a2a;display:inline-flex;align-items:center;justify-content:center;font-size:24px;overflow:hidden;flex:none}
+.ava img{width:100%;height:100%;object-fit:cover}
+.emo{display:grid;grid-template-columns:repeat(8,1fr);gap:4px;margin-top:10px}.emo button{padding:6px;font-size:22px}
+#log{max-height:100px;overflow:auto;font-size:14px;color:#ccc}
+#tools{overflow-x:auto}#tools button{flex:none;padding:8px 12px}
+.fl{position:fixed;bottom:130px;font-size:36px;animation:up 2s forwards;pointer-events:none}
+@keyframes up{to{transform:translateY(-260px);opacity:0}}
+</style>
+</head>
+<body>
+<div id="app"><div id="view"></div><div id="dock"></div></div>
+<input id="f" type="file" multiple hidden><input id="ph" type="file" accept="image/*" hidden>
+<script>
+const $ = s => $d.querySelector(s), $d = document;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const EMO = ['🕵️','😎','🦊','🐱','🐼','🦁','🐸','🐵','🤖','👽','🦄','🐯','🐧','🦉','🐲','🥷'];
+const DEF = ['Мектеп','Аурухана','Ұшақ','Базар','Кітапхана','Теңіз','Цирк','Банк'].map(place => ({game: '', place, roles: []}));
+// Дауыс үшін: мобильді желіде байланыс болмаса, осы жерге TURN сервер қосылады
+const ICE = {iceServers: [{urls: 'stun:stun.l.google.com:19302'}, {urls: 'stun:stun1.l.google.com:19302'}]};
+const ls = (k, d) => { try { return localStorage.getItem(k) || d; } catch (e) { return d; } };
+const sv = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+let nick = ls('nick', ''), ava = ls('ava', '🕵️'), sess = null;
+try { sess = JSON.parse(sessionStorage.getItem('sess') || 'null'); } catch (e) {}
+let ws, st = null, card = null, myid = null, off = 0, chat = [], guessOpen = false, lastPhase = '', myVote = null;
+let stream = null, pcs = {}, muted = false;
+const tx = o => ws && ws.readyState === 1 && ws.send(JSON.stringify(o));
+const av = a => String(a).startsWith('data:') ? `<img src="${a}">` : esc(a);
+const isHost = () => st.host === myid;
+const pl = id => st.players.find(p => p.id === id) || {nick: '?', ava: '❔'};
+
+// <parse>
+const keyOf = (o, re) => Object.keys(o).filter(k => re.test(k)).sort((a, b) => /_kk$/.test(b) - /_kk$/.test(a))[0];
+const strs = a => Array.isArray(a) ? a.filter(x => typeof x === 'string' && x.trim()).map(x => x.trim()) : [];
+function parse(v, out) {
+  if (typeof v === 'string') { if (v.trim()) out.push({game: '', place: v.trim(), roles: []}); return; }
+  if (Array.isArray(v)) { v.forEach(x => parse(x, out)); return; }
+  if (!v || typeof v !== 'object') return;
+  const kt = keyOf(v, /^(game|name|title|theme|topic)(_|$)/);
+  const kl = keyOf(v, /^(locations?|places?|words?)(_|$)/);
+  const kr = keyOf(v, /^roles?(_|$)/);
+  const game = kt && typeof v[kt] === 'string' ? v[kt].trim() : '';
+  if (kl) {
+    const places = typeof v[kl] === 'string' ? [v[kl].trim()] : strs(v[kl]);
+    const roles = kr ? strs(v[kr]) : [];
+    places.forEach(place => out.push({game, place, roles}));
+  } else if (game) {
+    out.push({game: '', place: game, roles: []});
+  } else {
+    const vals = Object.values(v), nested = vals.filter(x => x && typeof x === 'object');
+    (nested.length ? nested : vals).forEach(x => parse(x, out));
+  }
+}
+function parseFile(text) {
+  text = text.replace(/^\uFEFF/, '');
+  const out = [];
+  try {
+    const j = JSON.parse(text);
+    const d = j && j.data !== undefined ? j.data : j;
+    parse(d, out);
+    if (!out.length && d && typeof d === 'object' && !Array.isArray(d))
+      Object.keys(d).forEach(k => out.push({game: '', place: k, roles: []}));
+  } catch (_) {
+    text.split(/\r?\n/).forEach(l => { l = l.trim(); if (l) out.push({game: '', place: l, roles: []}); });
+  }
+  return out;
+}
+// </parse>
+
+// ---------- байланыс ----------
+function go(msg) {
+  const w = ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
+  w.onopen = () => w.send(JSON.stringify(msg));
+  w.onmessage = e => on(JSON.parse(e.data));
+  w.onclose = () => { if (w === ws && sess) setTimeout(() => go({t: 'join', room: sess.code, id: sess.id, nick, ava}), 1500); };
+}
+setInterval(() => tx({t: 'ping'}), 20000);
+
+function on(m) {
+  if (m.t === 'joined') {
+    myid = m.id; sess = {id: m.id, code: m.code}; sessionStorage.setItem('sess', JSON.stringify(sess));
+    if (m.created) tx({t: 'items', items: DEF});
+  } else if (m.t === 'state') {
+    st = m; off = m.now - Date.now();
+    if (st.phase !== lastPhase) {
+      if (st.phase === 'play') { navigator.vibrate && navigator.vibrate(200); guessOpen = false; keepAwake(); }
+      if (st.phase === 'vote') myVote = null;
+      if (st.phase === 'lobby') card = null;
+      lastPhase = st.phase;
+    }
+    render(); dock(); syncVoice();
+  } else if (m.t === 'role') { card = m; render(); }
+  else if (m.t === 'chat') { chat.push(m); chat = chat.slice(-40); drawChat(); }
+  else if (m.t === 'react') float(m.e);
+  else if (m.t === 'sig') onSig(m);
+  else if (m.t === 'err') { sess = null; sessionStorage.removeItem('sess'); alert(m.m); st = null; render(); dock(); }
+}
+async function keepAwake() { try { await navigator.wakeLock.request('screen'); } catch (e) {} }
+
+// ---------- экрандар ----------
+function render() {
+  const v = $('#view');
+  if (!st) return home(v);
+  ({lobby, play, vote: voteV, guess: guessV, result: resultV}[st.phase] || lobby)(v);
+}
+const pRow = p => `<div class="pl"><span class="ava">${av(p.ava)}</span><span>${esc(p.nick)}${st.host === p.id ? ' ★' : ''}</span><span class="muted">${p.voice ? '🎤 ' : ''}${p.on ? '' : 'офлайн '}</span><b>${p.score}</b></div>`;
+
+function home(v) {
+  const code = new URLSearchParams(location.search).get('room') || '';
+  v.innerHTML = `<h1>ШПИОН</h1>
+  <div class="card">
+    <div class="row2" style="align-items:center"><span class="ava" id="me">${av(ava)}</span><input id="nick" placeholder="Ник" maxlength="14" value="${esc(nick)}"><button onclick="$('#ph').click()">Фото</button></div>
+    <div class="emo">${EMO.map(e => `<button onclick="pick('${e}')">${e}</button>`).join('')}</div>
+  </div>
+  <button class="main" onclick="create()">Рум құру</button>
+  <div class="row2"><input id="code" placeholder="КОД" maxlength="4" value="${esc(code.toUpperCase().slice(0, 4))}" style="text-transform:uppercase"><button onclick="joinRoom()">Кіру</button></div>`;
+}
+function pick(e) { ava = e; sv('ava', e); $('#me').innerHTML = av(e); }
+$('#ph').onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  const img = new Image();
+  img.onload = () => {
+    const c = $d.createElement('canvas'); c.width = c.height = 64;
+    const s = Math.min(img.width, img.height);
+    c.getContext('2d').drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, 64, 64);
+    pick(c.toDataURL('image/jpeg', 0.7)); URL.revokeObjectURL(img.src);
+  };
+  img.src = URL.createObjectURL(f); e.target.value = '';
+};
+function nk() { nick = ($('#nick').value || '').trim().slice(0, 14) || 'Ойыншы'; sv('nick', nick); }
+function create() { nk(); go({t: 'join', nick, ava}); }
+function joinRoom() {
+  const c = ($('#code').value || '').trim().toUpperCase();
+  if (c.length !== 4) return alert('4 әріптік код жазыңыз');
+  nk(); go({t: 'join', room: c, nick, ava});
+}
+function leave() {
+  tx({t: 'leave'}); sess = null; sessionStorage.removeItem('sess');
+  closeVoice(); st = null; card = null; chat = []; ws && ws.close(); render(); dock();
+}
+function share() {
+  const u = location.origin + '/?room=' + st.code;
+  if (navigator.share) navigator.share({title: 'Шпион', text: 'Румға кір: ' + st.code, url: u}).catch(() => {});
+  else navigator.clipboard.writeText(u).then(() => alert('Сілтеме көшірілді'));
+}
+function set(k, d) {
+  const v = {minutes: st.minutes, spies: st.spies, hint: st.hint};
+  if (k === 'hint') v.hint = !v.hint; else v[k] = Math.max(1, Math.min(k === 'spies' ? 3 : 60, v[k] + d));
+  tx({t: 'set', ...v});
+}
+$('#f').onchange = async e => {
+  const all = [];
+  for (const f of e.target.files) all.push(...parseFile(await f.text()));
+  e.target.value = '';
+  if (!all.length) return alert('Файлда ештеңе табылмады');
+  const seen = new Set();
+  tx({t: 'items', items: all.filter(x => { const k = x.game + '|' + x.place; return seen.has(k) ? false : seen.add(k); })});
+};
+
+function lobby(v) {
+  const h = isHost(), n = st.players.filter(p => p.on).length;
+  v.innerHTML = `<h1>${st.code}</h1>
+  <button onclick="share()">Сілтемені жіберу</button>
+  <div class="card">${st.players.map(pRow).join('')}</div>
+  ${h ? `<div class="card">
+    <div class="row">Таймер (мин)<span class="num"><button onclick="set('minutes',-1)">−</button><b>${st.minutes}</b><button onclick="set('minutes',1)">+</button></span></div>
+    <div class="row" style="margin-top:10px">Шпион саны<span class="num"><button onclick="set('spies',-1)">−</button><b>${st.spies}</b><button onclick="set('spies',1)">+</button></span></div>
+    <div class="row" style="margin-top:10px">Шпион тақырыпты көреді<button onclick="set('hint',0)">${st.hint ? 'Иә' : 'Жоқ'}</button></div>
+    <div class="muted" style="margin:10px 0">${st.count || DEF.length} нұсқа</div>
+    <button style="width:100%" onclick="$('#f').click()">JSON / TXT файл таңдау</button></div>
+    <button class="main" onclick="tx({t:'start'})" ${n < 3 ? 'disabled' : ''}>Бастау (${n}/3+)</button>`
+  : '<div class="muted" style="text-align:center">Хост бастауын күтіңіз…</div>'}
+  <button onclick="leave()">Шығу</button>`;
+}
+
+function opts() {
+  return card.opts.map(o => `<button style="width:100%;margin:4px 0" data-p="${esc(o)}" onclick="tx({t:'guess',place:this.dataset.p})">${esc(o)}</button>`).join('');
+}
+function play(v) {
+  const spy = card && card.spy;
+  v.innerHTML = `<div class="card tap" style="min-height:30vh"><div class="muted">Қалған уақыт</div><div class="time" id="t">--:--</div></div>
+  <div class="card tap" id="cd" style="padding:22px;user-select:none;-webkit-user-select:none" oncontextmenu="return false"
+    onpointerdown="hold(1)" onpointerup="hold(0)" onpointerleave="hold(0)" onpointercancel="hold(0)"></div>
+  ${spy ? `<button onclick="guessOpen=!guessOpen;render()">Орынды болжау</button>` : ''}
+  ${spy && guessOpen ? `<div class="card">${opts()}</div>` : ''}
+  <div class="card">${st.players.map(pRow).join('')}</div>
+  ${isHost() ? `<button class="main" onclick="tx({t:'vote_start'})">Дауыс беруді бастау</button>` : ''}`;
+  hold(0);
+}
+function hold(on) {
+  const e = $('#cd'); if (!e) return;
+  if (!card) { e.innerHTML = '<div class="muted">Рөл жүктелуде…</div>'; return; }
+  if (!on) { e.innerHTML = '<div class="muted">Рөлді көру үшін басып тұрыңыз</div>'; return; }
+  const g = card.game ? `<div class="muted">Тақырып</div><div class="mid">${esc(card.game)}</div>` : '';
+  e.innerHTML = card.spy ? `<div class="big">ШПИОН</div>${g}`
+    : `${g}<div class="muted">${card.hasRoles ? 'Орын' : 'Сөз'}</div><div class="big">${esc(card.place)}</div>` +
+      (card.role ? `<div class="muted">Рөл</div><div class="mid">${esc(card.role)}</div>` : '');
+}
+function vote(id) { myVote = id; tx({t: 'vote', target: id}); render(); }
+function voteV(v) {
+  const on = st.players.filter(p => p.on);
+  v.innerHTML = `<h1>Дауыс беру</h1><div class="muted" style="text-align:center">Шпион кім деп ойлайсыз?</div>
+  ${on.filter(p => p.id !== myid).map(p => `<button class="${myVote === p.id ? 'main' : ''}" style="display:flex;align-items:center;gap:12px;width:100%" onclick="vote('${p.id}')"><span class="ava">${av(p.ava)}</span>${esc(p.nick)}</button>`).join('')}
+  <div class="muted" style="text-align:center">Дауыс берді: ${on.filter(p => p.voted).length}/${on.length}</div>
+  ${isHost() ? `<button onclick="tx({t:'tally'})">Нәтижені шығару</button>` : ''}`;
+}
+function guessV(v) {
+  v.innerHTML = card && card.spy && st.caught === myid
+    ? `<h1>Сені ұстады!</h1><div class="muted" style="text-align:center">Орынды тапсаң — ұтасың</div><div class="card">${opts()}</div>`
+    : `<h1>Шпион ұсталды</h1><div class="muted" style="text-align:center">${esc(pl(st.caught).nick)} орынды болжап жатыр…</div>`;
+}
+function resultV(v) {
+  const r = st.result, w = r.win === 'spy';
+  v.innerHTML = `<h1>${w ? 'Шпион жеңді' : 'Шпион ұтылды'}</h1><div class="muted" style="text-align:center">${esc(r.why)}</div>
+  <div class="card tap"><div class="muted">Шпион</div><div class="mid">${r.spies.map(i => esc(pl(i).nick)).join(', ')}</div>
+    ${r.game ? `<div class="muted">Тақырып</div><div class="mid">${esc(r.game)}</div>` : ''}
+    <div class="muted">${card && card.hasRoles ? 'Орын' : 'Сөз'}</div><div class="big">${esc(r.place)}</div></div>
+  <div class="card">${[...st.players].sort((a, b) => b.score - a.score).map(pRow).join('')}</div>
+  ${isHost() ? `<button class="main" onclick="tx({t:'next'})">Келесі раунд</button>` : ''}
+  <button onclick="leave()">Шығу</button>`;
+}
+setInterval(() => {
+  const t = $('#t'); if (!t || !st) return;
+  const s = Math.ceil(Math.max(0, st.endAt - (Date.now() + off)) / 1000);
+  t.textContent = String(s / 60 | 0).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+}, 250);
+
+// ---------- чат және реакция ----------
+function dock() {
+  const d = $('#dock');
+  if (!st) { d.innerHTML = ''; return; }
+  if (!$('#log')) d.innerHTML = `<div id="log"></div><div class="row2"><input id="ci" placeholder="Хабар…" maxlength="200" onkeydown="if(event.key==='Enter')sendChat()"><button onclick="sendChat()">➤</button></div><div class="row2" id="tools"></div>`;
+  $('#tools').innerHTML = `<button onclick="toggleVoice()">${stream ? '🎤 Өшіру' : '🎤 Қосу'}</button>${stream ? `<button onclick="mute()">${muted ? '🔇' : '🔊'}</button>` : ''}${['👍','😂','😮','🤔','🔥'].map(e => `<button onclick="tx({t:'react',e:'${e}'})">${e}</button>`).join('')}`;
+  drawChat();
+}
+function drawChat() {
+  const l = $('#log'); if (!l) return;
+  l.innerHTML = chat.map(m => `<div><b>${esc(m.nick)}:</b> ${esc(m.text)}</div>`).join(''); l.scrollTop = l.scrollHeight;
+}
+function sendChat() { const i = $('#ci'), t = i.value.trim(); if (t) { tx({t: 'chat', text: t}); i.value = ''; } }
+function float(e) {
+  const d = $d.createElement('div'); d.className = 'fl'; d.textContent = e; d.style.left = (10 + Math.random() * 80) + '%';
+  $d.body.append(d); setTimeout(() => d.remove(), 2000);
+}
+
+// ---------- дауыстық чат (WebRTC) ----------
+async function toggleVoice() {
+  if (!stream) {
+    try { stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}}); }
+    catch (e) { return alert('Микрофонға рұқсат берілмеді'); }
+    muted = false; tx({t: 'voice', on: true});
+  } else { closeVoice(); tx({t: 'voice', on: false}); }
+  dock();
+}
+function mute() { muted = !muted; stream.getAudioTracks().forEach(t => t.enabled = !muted); dock(); }
+function closeVoice() { stream && stream.getTracks().forEach(t => t.stop()); stream = null; Object.keys(pcs).forEach(dropPc); }
+function dropPc(id) { const c = pcs[id]; if (c) { c.pc.close(); c.el.remove(); delete pcs[id]; } }
+function syncVoice() {
+  if (!stream || !st) return;
+  const ids = st.players.filter(p => p.voice && p.id !== myid).map(p => p.id);
+  Object.keys(pcs).filter(id => !ids.includes(id)).forEach(dropPc);
+  ids.forEach(id => { if (!pcs[id]) mkPc(id, myid < id); });
+}
+function mkPc(id, offerer) {
+  const pc = new RTCPeerConnection(ICE), el = $d.createElement('audio');
+  el.autoplay = true; el.playsInline = true; $d.body.append(el);
+  pcs[id] = {pc, el, q: []};
+  stream.getTracks().forEach(t => pc.addTrack(t, stream));
+  pc.ontrack = e => { el.srcObject = e.streams[0]; el.play().catch(() => {}); };
+  pc.onicecandidate = e => e.candidate && tx({t: 'sig', to: id, data: {c: e.candidate}});
+  pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed') { dropPc(id); setTimeout(syncVoice, 1500); } };
+  if (offerer) pc.createOffer().then(o => pc.setLocalDescription(o)).then(() => tx({t: 'sig', to: id, data: {d: pc.localDescription}}));
+}
+async function onSig(m) {
+  if (!stream) return;
+  let c = pcs[m.from];
+  if (!c) { if (!m.data.d || m.data.d.type !== 'offer') return; mkPc(m.from, false); c = pcs[m.from]; }
+  const pc = c.pc;
+  try {
+    if (m.data.d) {
+      await pc.setRemoteDescription(m.data.d);
+      if (m.data.d.type === 'offer') { await pc.setLocalDescription(await pc.createAnswer()); tx({t: 'sig', to: m.from, data: {d: pc.localDescription}}); }
+      for (const x of c.q.splice(0)) await pc.addIceCandidate(x);
+    }
+    if (m.data.c) { if (pc.remoteDescription) await pc.addIceCandidate(m.data.c); else c.q.push(m.data.c); }
+  } catch (e) {}
+}
+
+// ---------- іске қосу ----------
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+if (sess) go({t: 'join', room: sess.code, id: sess.id, nick, ava});
+render();
+</script>
+</body>
+</html>
