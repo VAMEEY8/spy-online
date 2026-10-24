@@ -1,1 +1,8 @@
-[{"relation":["delegate_permission/common.handle_all_urls"],"target":{"namespace":"android_app","package_name":"com.vameey.spy","sha256_cert_fingerprints":["PASTE_SHA256_FROM_PWABUILDER_ZIP_HERE"]}}]
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "com.onrender.spy_online.twa",
+        "sha256_cert_fingerprints": ["4A:BA:98:5E:BF:58:C6:4A:25:D2:0B:5A:08:8E:59:21:D6:74:7D:CD:EB:B6:E9:8A:9B:66:8F:36:E4:51:2F:5D"]
+      }
+    }]
