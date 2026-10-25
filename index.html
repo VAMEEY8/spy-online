@@ -36,6 +36,8 @@ input{flex:1;width:100%;background:#1c1c1c;border:1px solid #444;color:#f2f2f2;b
 #tools{overflow-x:auto}#tools button{flex:none;padding:8px 12px}
 .fl{position:fixed;bottom:130px;font-size:36px;animation:up 2s forwards;pointer-events:none}
 @keyframes up{to{transform:translateY(-260px);opacity:0}}
+html.light{filter:invert(1) hue-rotate(180deg)}html.light .ava,html.light .fl{filter:invert(1) hue-rotate(180deg)}
+.pl button{padding:2px 10px;font-size:14px}
 </style>
 </head>
 <body>
@@ -108,10 +110,10 @@ function go(msg) {
   const w = ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
   w.onopen = () => w.send(JSON.stringify(msg));
   w.onmessage = e => on(JSON.parse(e.data));
-  w.onclose = () => { if (w === ws && sess) { clearTimeout(retry); retry = setTimeout(rejoin, 700); } };
+  w.onclose = () => { if (w !== ws) return; if (sess) { clearTimeout(retry); retry = setTimeout(rejoin, 700); } else if (!st) { al('Қосыла алмады, қайталап көріңіз'); render(); } };
 }
 let retry;
-const rejoin = () => { if (sess && (!ws || ws.readyState > 1)) go({t: 'join', room: sess.code, id: sess.id, nick, ava}); };
+const rejoin = () => { if (sess && (!ws || ws.readyState > 1)) go(jm({room: sess.code, id: sess.id})); };
 document.addEventListener('visibilitychange', () => { if (!document.hidden) rejoin(); });
 setInterval(() => tx({t: 'ping'}), 20000);
 
@@ -124,7 +126,7 @@ function on(m) {
     st = m; off = m.now - Date.now();
     if (st.phase !== lastPhase) {
       if (st.phase === 'play') { navigator.vibrate && navigator.vibrate(200); guessOpen = false; keepAwake(); }
-      if (st.phase === 'vote') myVote = null;
+      if (st.phase === 'vote') { myVote = null; tone(880, 500); navigator.vibrate && navigator.vibrate([200, 100, 200]); }
       if (st.phase === 'lobby') card = null;
       lastPhase = st.phase;
     }
@@ -133,17 +135,18 @@ function on(m) {
   else if (m.t === 'chat') { chat.push(m); chat = chat.slice(-40); drawChat(); }
   else if (m.t === 'react') float(m.e);
   else if (m.t === 'sig') onSig(m);
-  else if (m.t === 'err') { sess = null; sessionStorage.removeItem('sess'); alert(m.m); st = null; render(); dock(); }
+  else if (m.t === 'msg') al(m.m);
+  else if (m.t === 'err') { sess = null; sessionStorage.removeItem('sess'); const w = ws; ws = null; w && w.close(); al(m.m); st = null; render(); dock(); }
 }
 async function keepAwake() { try { await navigator.wakeLock.request('screen'); } catch (e) {} }
 
 // ---------- экрандар ----------
 function render() {
   const v = $('#view');
-  if (!st) return home(v);
-  ({lobby, play, vote: voteV, guess: guessV, result: resultV}[st.phase] || lobby)(v);
+  if (!st) home(v); else ({lobby, play, vote: voteV, guess: guessV, result: resultV}[st.phase] || lobby)(v);
+  tr(v);
 }
-const pRow = p => `<div class="pl"><span class="ava">${av(p.ava)}</span><span>${esc(p.nick)}${st.host === p.id ? ' ★' : ''}</span><span class="muted">${p.voice ? '🎤 ' : ''}${p.on ? '' : 'офлайн '}</span><b>${p.score}</b></div>`;
+const pRow = p => `<div class="pl"><span class="ava">${av(p.ava)}</span><span>${esc(p.nick)}${st.host === p.id ? ' ★' : ''}</span><span class="muted">${p.ready && st.phase === 'lobby' ? '✓ ' : ''}${p.voice ? '🎤 ' : ''}${p.on ? '' : 'офлайн '}</span>${isHost() && st.phase === 'lobby' && p.id !== myid ? `<button onclick="tx({t:'kick',id:'${p.id}'})">✕</button>` : ''}<b>${p.score}</b></div>`;
 
 function home(v) {
   const code = new URLSearchParams(location.search).get('room') || '';
@@ -152,8 +155,12 @@ function home(v) {
     <div class="row2" style="align-items:center"><span class="ava" id="me">${av(ava)}</span><input id="nick" placeholder="Ник" maxlength="14" value="${esc(nick)}"><button onclick="$('#ph').click()">Фото</button></div>
     <div class="emo">${EMO.map(e => `<button onclick="pick('${e}')">${e}</button>`).join('')}</div>
   </div>
+  <input id="pw" placeholder="Құпиясөз (міндетті емес)" maxlength="20">
   <button class="main" onclick="create()">Рум құру</button>
-  <div class="row2"><input id="code" placeholder="КОД" maxlength="4" value="${esc(code.toUpperCase().slice(0, 4))}" style="text-transform:uppercase"><button onclick="joinRoom()">Кіру</button></div>`;
+  <div class="row2"><input id="code" placeholder="КОД" maxlength="4" value="${esc(code.toUpperCase().slice(0, 4))}" style="text-transform:uppercase"><button onclick="joinRoom()">Кіру</button></div>
+  <button onclick="localSetup()">Бір телефонда ойнау</button>
+  <div class="row2"><button onclick="setLang()">${lang === 'en' ? 'Қазақша' : 'English'}</button><button onclick="setTheme()">◐</button></div>
+  <div class="muted" id="stat" style="text-align:center"></div>`;
 }
 function pick(e) { ava = e; sv('ava', e); $('#me').innerHTML = av(e); }
 $('#ph').onchange = e => {
@@ -168,38 +175,38 @@ $('#ph').onchange = e => {
   img.src = URL.createObjectURL(f); e.target.value = '';
 };
 function nk() { nick = ($('#nick').value || '').trim().slice(0, 14) || 'Ойыншы'; sv('nick', nick); }
-function create() { nk(); go({t: 'join', nick, ava}); }
+function create() { if (busy()) return; nk(); stat(); go(jm({})); }
 function joinRoom() {
   const c = ($('#code').value || '').trim().toUpperCase();
-  if (c.length !== 4) return alert('4 әріптік код жазыңыз');
-  nk(); go({t: 'join', room: c, nick, ava});
+  if (c.length !== 4) return al('4 әріптік код жазыңыз');
+  if (busy()) return; nk(); stat(); go(jm({room: c}));
 }
 function leave() {
   tx({t: 'leave'}); sess = null; sessionStorage.removeItem('sess');
-  closeVoice(); st = null; card = null; chat = []; ws && ws.close(); render(); dock();
+  closeVoice(); st = null; card = null; chat = []; { const w = ws; ws = null; w && w.close(); } render(); dock();
 }
 function share() {
   const u = location.origin + '/?room=' + st.code;
   if (navigator.share) navigator.share({title: 'Шпион', text: 'Румға кір: ' + st.code, url: u}).catch(() => {});
-  else navigator.clipboard.writeText(u).then(() => alert('Сілтеме көшірілді'));
+  else navigator.clipboard.writeText(u).then(() => al('Сілтеме көшірілді'));
 }
 function set(k, d) {
-  const v = {minutes: st.minutes, spies: st.spies, hint: st.hint};
-  if (k === 'hint') v.hint = !v.hint; else v[k] = Math.max(1, Math.min(k === 'spies' ? 3 : 60, v[k] + d));
+  const v = {minutes: st.minutes, spies: st.spies, hint: st.hint, lost: st.lost};
+  if (k === 'hint' || k === 'lost') v[k] = !v[k]; else v[k] = Math.max(1, Math.min(k === 'spies' ? 3 : 60, v[k] + d));
   tx({t: 'set', ...v});
 }
 $('#f').onchange = async e => {
   const files = [...e.target.files], all = [];
   e.target.value = '';
   for (const f of files) all.push(...parseFile(await f.text()));
-  if (!all.length) return alert('Файлда ештеңе табылмады');
-  const seen = new Set();
-  tx({t: 'items', custom: true, name: files.map(f => f.name).join(', '),
-    items: all.filter(x => { const k = x.game + '|' + x.place; return seen.has(k) ? false : seen.add(k); })});
+  if (!all.length) return al('Файлда ештеңе табылмады');
+  const seen = new Set(), items = all.filter(x => { const k = x.game + '|' + x.place; return seen.has(k) ? false : seen.add(k); });
+  if (localMode) { LI = items; sv('li', JSON.stringify(items)); localSetup(); }
+  else tx({t: 'items', custom: true, name: files.map(f => f.name).join(', '), items});
 };
 
 function lobby(v) {
-  const h = isHost(), n = st.players.filter(p => p.on).length;
+  const h = isHost(), n = st.players.filter(p => p.on).length, rd = st.players.every(p => !p.on || p.ready || p.id === st.host), my = pl(myid);
   v.innerHTML = `<h1>${st.code}</h1>
   <button onclick="share()">Сілтемені жіберу</button>
   <div class="card">${st.players.map(pRow).join('')}</div>
@@ -207,10 +214,11 @@ function lobby(v) {
     <div class="row">Таймер (мин)<span class="num"><button onclick="set('minutes',-1)">−</button><b>${st.minutes}</b><button onclick="set('minutes',1)">+</button></span></div>
     <div class="row" style="margin-top:10px">Шпион саны<span class="num"><button onclick="set('spies',-1)">−</button><b>${st.spies}</b><button onclick="set('spies',1)">+</button></span></div>
     <div class="row" style="margin-top:10px">Шпион тақырыпты көреді<button onclick="set('hint',0)">${st.hint ? 'Иә' : 'Жоқ'}</button></div>
+    <div class="row" style="margin-top:10px">Адасқан режимі<button onclick="set('lost',0)">${st.lost ? 'Иә' : 'Жоқ'}</button></div>
     <div class="muted" style="margin:10px 0">${st.custom ? '✔ ' + esc(st.src) + ': ' + st.count + ' нұсқа' : 'Стандартты жинақ: ' + (st.count || DEF.length) + ' нұсқа'}</div>
     <button style="width:100%" onclick="$('#f').click()">JSON / TXT файл таңдау</button></div>
-    <button class="main" onclick="tx({t:'start'})" ${n < 3 ? 'disabled' : ''}>Бастау (${n}/3+)</button>`
-  : '<div class="muted" style="text-align:center">Хост бастауын күтіңіз…</div>'}
+    <button class="main" onclick="tx({t:'start'})" ${n < 3 || !rd ? 'disabled' : ''}>Бастау (${n}/3+)</button>${rd ? '' : '<div class="muted" style="text-align:center">Барлығы «Дайынмын» басуы керек</div>'}`
+  : `<button class="${my.ready ? '' : 'main'}" onclick="tx({t:'ready',on:${!my.ready}})">${my.ready ? 'Дайын емеспін' : 'Дайынмын'}</button><div class="muted" style="text-align:center">Хост бастауын күтіңіз…</div>`}
   <button onclick="leave()">Шығу</button>`;
 }
 
@@ -229,6 +237,9 @@ function play(v) {
   hold(0);
 }
 function hold(on) {
+  hold0(on); const e = $('#cd'); e && tr(e);
+}
+function hold0(on) {
   const e = $('#cd'); if (!e) return;
   if (!card) { e.innerHTML = '<div class="muted">Рөл жүктелуде…</div>'; return; }
   if (!on) { e.innerHTML = '<div class="muted">Рөлді көру үшін басып тұрыңыз</div>'; return; }
@@ -254,16 +265,20 @@ function resultV(v) {
   const r = st.result, w = r.win === 'spy';
   v.innerHTML = `<h1>${w ? 'Шпион жеңді' : 'Шпион ұтылды'}</h1><div class="muted" style="text-align:center">${esc(r.why)}</div>
   <div class="card tap"><div class="muted">Шпион</div><div class="mid">${r.spies.map(i => esc(pl(i).nick)).join(', ')}</div>
+    ${r.lost ? `<div class="muted" style="margin-top:8px">Адасқан</div><div class="mid">${esc(pl(r.lost).nick)} (${esc(r.lostPlace)})</div>` : ''}
     ${r.game ? `<div class="muted">Тақырып</div><div class="mid">${esc(r.game)}</div>` : ''}
     <div class="muted">${card && card.hasRoles ? 'Орын' : 'Сөз'}</div><div class="big">${esc(r.place)}</div></div>
   <div class="card">${[...st.players].sort((a, b) => b.score - a.score).map(pRow).join('')}</div>
   ${isHost() ? `<button class="main" onclick="tx({t:'next'})">Келесі раунд</button>` : ''}
   <button onclick="leave()">Шығу</button>`;
 }
+let lastTick = 99;
 setInterval(() => {
   const t = $('#t'); if (!t || !st) return;
   const s = Math.ceil(Math.max(0, st.endAt - (Date.now() + off)) / 1000);
-  t.textContent = String(s / 60 | 0).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+  t.textContent = mmss(s);
+  if (st.phase === 'play' && s <= 10 && s > 0 && s !== lastTick) tone(660, 120);
+  lastTick = s;
 }, 250);
 
 // ---------- чат және реакция ----------
@@ -271,8 +286,8 @@ function dock() {
   const d = $('#dock');
   if (!st) { d.innerHTML = ''; return; }
   if (!$('#log')) d.innerHTML = `<div id="log"></div><div class="row2"><input id="ci" placeholder="Хабар…" maxlength="200" onkeydown="if(event.key==='Enter')sendChat()"><button onclick="sendChat()">➤</button></div><div class="row2" id="tools"></div>`;
-  $('#tools').innerHTML = `<button onclick="toggleVoice()">${stream ? '🎤 Өшіру' : '🎤 Қосу'}</button>${stream ? `<button onclick="mute()">${muted ? '🔇' : '🔊'}</button>` : ''}${['👍','😂','😮','🤔','🔥'].map(e => `<button onclick="tx({t:'react',e:'${e}'})">${e}</button>`).join('')}`;
-  drawChat();
+  $('#tools').innerHTML = `<button onclick="setSnd()">${ls('snd', '1') === '1' ? '🔔' : '🔕'}</button><button onclick="setLang()">${lang === 'en' ? 'KZ' : 'EN'}</button><button onclick="setTheme()">◐</button><button onclick="toggleVoice()">${stream ? '🎤 Өшіру' : '🎤 Қосу'}</button>${stream ? `<button onclick="mute()">${muted ? '🔇' : '🔊'}</button>` : ''}${['👍','😂','😮','🤔','🔥'].map(e => `<button onclick="tx({t:'react',e:'${e}'})">${e}</button>`).join('')}`;
+  drawChat(); tr($('#dock'));
 }
 function drawChat() {
   const l = $('#log'); if (!l) return;
@@ -288,7 +303,7 @@ function float(e) {
 async function toggleVoice() {
   if (!stream) {
     try { stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}}); }
-    catch (e) { return alert('Микрофонға рұқсат берілмеді'); }
+    catch (e) { return al('Микрофонға рұқсат берілмеді'); }
     muted = false; tx({t: 'voice', on: true});
   } else { closeVoice(); tx({t: 'voice', on: false}); }
   dock();
@@ -327,9 +342,125 @@ async function onSig(m) {
   } catch (e) {}
 }
 
+// ---------- қосымша: тіл, тақырып, дыбыс, қосылу қорғанысы ----------
+const rnd = n => Math.random() * n | 0;
+const shuf = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = rnd(i + 1); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+const mmss = s => String(s / 60 | 0).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+let cid = ls('cid', ''); if (!cid) { cid = Math.random().toString(36).slice(2) + Date.now().toString(36); sv('cid', cid); }
+const jm = o => ({t: 'join', nick, ava, cid, pw: ($('#pw') || {}).value || '', ...o});
+const busy = () => ws && ws.readyState <= 1 && !sess;  // екі рет басып, екі ойыншы болып кетпеу үшін
+const stat = () => {
+  const s = $('#stat'); if (s) { s.textContent = 'Қосылуда… сервер оянуы 1 минутқа дейін алады'; tr(s); }
+  $d.querySelectorAll('#view button').forEach(b => b.disabled = true);
+};
+let lang = ls('lang', 'kk'), ac;
+const EN = {'ШПИОН':'SPY','Шпион':'Spy','Ник':'Nickname','Фото':'Photo','Рум құру':'Create room','КОД':'CODE','Кіру':'Join',
+'Құпиясөз (міндетті емес)':'Password (optional)','Бір телефонда ойнау':'Play on one phone','Қазақша':'Қазақша',
+'Сілтемені жіберу':'Share link','Таймер (мин)':'Timer (min)','Шпион саны':'Spies','Шпион тақырыпты көреді':'Spy sees the topic',
+'Адасқан режимі':'Lost player mode','Адасқан':'Lost player','Иә':'Yes','Жоқ':'No','JSON / TXT файл таңдау':'Choose JSON / TXT file',
+'Хост бастауын күтіңіз…':'Waiting for the host…','Шығу':'Leave','Дайынмын':'I am ready','Дайын емеспін':'Not ready',
+'Барлығы «Дайынмын» басуы керек':'Everyone must press “I am ready”','офлайн':'offline','Қалған уақыт':'Time left',
+'Рөлді көру үшін басып тұрыңыз':'Press and hold to see your role','Рөл жүктелуде…':'Loading role…','Орынды болжау':'Guess the place',
+'Дауыс беруді бастау':'Start voting','Тақырып':'Topic','Орын':'Place','Сөз':'Word','Рөл':'Role','Дауыс беру':'Vote',
+'Шпион кім деп ойлайсыз?':'Who is the spy?','Нәтижені шығару':'Show result','Сені ұстады!':'You were caught!',
+'Орынды тапсаң — ұтасың':'Guess the place to win','Шпион ұсталды':'Spy caught','Өткізіп жіберу':'Skip','Шпион жеңді':'Spy wins',
+'Шпион ұтылды':'Spy loses','Келесі раунд':'Next round','Шпион орынды тапты':'Spy found the place',
+'Шпион орынды таба алмады':'Spy missed the place','Қарапайым ойыншы шығарылды':'An innocent player was voted out',
+'Дауыс тең болды немесе берілмеді':'Votes tied or none cast','Шпион жауап бермеді':'Spy did not answer','Шпион ойыннан шықты':'Spy left the game',
+'Хабар…':'Message…','🎤 Өшіру':'🎤 Off','🎤 Қосу':'🎤 On','4 әріптік код жазыңыз':'Enter the 4-letter code',
+'Файлда ештеңе табылмады':'Nothing found in the file','Микрофонға рұқсат берілмеді':'Microphone permission denied',
+'Сілтеме көшірілді':'Link copied','Рум табылмады':'Room not found','Рум толы':'Room is full','Ойын басталып кетті':'Game already started',
+'Құпиясөз қате':'Wrong password','Хост сізді румнан шығарды':'The host removed you','Барлығы дайын емес':'Not everyone is ready',
+'Қосыла алмады, қайталап көріңіз':'Could not connect, try again','Ойыншылар':'Players','Ойнау':'Play','Көру үшін басыңыз':'Tap to see',
+'Жасыру үшін басыңыз':'Tap to hide','Бәрі көрді':'Everyone has seen','Ойынды бастау':'Start the game','Ойын жүріп жатыр':'Game in progress',
+'Шпионды ашу':'Reveal the spy','Тоқтату':'Stop','Уақыт бітті':'Time is up','Қайта ойнау':'Play again','Баптаулар':'Settings','Артқа':'Back',
+'Стандартты жинаққа қайту':'Back to default set'};
+const RX = [[/(\d+)-ойыншы/g, 'Player $1'], [/^Бастау \(/, 'Start ('], [/ нұсқа/, ' options'], [/^Стандартты жинақ:/, 'Default set:'],
+  [/\(файл\)/, '(file)'], [/^Дауыс берді:/, 'Voted:'], [/ орынды болжап жатыр…/, ' is guessing the place…'],
+  [/^Қосылуда… .*/, 'Connecting… the server may take up to a minute to wake up']];
+const T = s => {
+  if (lang !== 'en') return s;
+  const k = s.trim(); if (EN[k]) return s.replace(k, EN[k]);
+  return RX.reduce((x, [r, b]) => x.replace(r, b), s);
+};
+const al = m => alert(T(m));
+function tr(root) {
+  if (lang !== 'en' || !root) return;
+  const w = $d.createTreeWalker(root, NodeFilter.SHOW_TEXT); let n;
+  while (n = w.nextNode()) { if (n.parentNode.closest('#log')) continue; const v = T(n.nodeValue); if (v !== n.nodeValue) n.nodeValue = v; }
+  root.querySelectorAll('[placeholder]').forEach(e => e.placeholder = T(e.placeholder));
+}
+function tone(f, ms) {
+  if (ls('snd', '1') !== '1') return;
+  try {
+    ac = ac || new (window.AudioContext || window.webkitAudioContext)(); ac.resume();
+    const o = ac.createOscillator(), g = ac.createGain(); g.gain.value = .15; o.frequency.value = f; o.connect(g); g.connect(ac.destination);
+    o.start(); setTimeout(() => o.stop(), ms);
+  } catch (e) {}
+}
+function setSnd() { sv('snd', ls('snd', '1') === '1' ? '0' : '1'); dock(); }
+function setLang() { lang = lang === 'en' ? 'kk' : 'en'; sv('lang', lang); $('#dock').innerHTML = ''; render(); dock(); }
+function setTheme() { sv('th', $d.documentElement.classList.toggle('light') ? 'l' : 'd'); }
+if (ls('th', 'd') === 'l') $d.documentElement.classList.add('light');
+
+// ---------- бір телефондағы режим (интернетсіз) ----------
+let localMode = false, LI = [], LG = null, lt = null;
+let LS = {n: +ls('ln', 4) || 4, m: +ls('lm', 5) || 5, s: 1, lost: false};
+try { LI = JSON.parse(ls('li', '[]')); } catch (e) {}
+const V = h => { const v = $('#view'); v.innerHTML = h; tr(v); };
+function lset(k, d, lo, hi) { LS[k] = Math.max(lo, Math.min(hi, LS[k] + d)); sv('ln', LS.n); sv('lm', LS.m); localSetup(); }
+function localSetup() {
+  clearInterval(lt); localMode = true;
+  V(`<h1>ШПИОН</h1>
+  <div class="card row">Ойыншылар<span class="num"><button onclick="lset('n',-1,3,20)">−</button><b>${LS.n}</b><button onclick="lset('n',1,3,20)">+</button></span></div>
+  <div class="card row">Таймер (мин)<span class="num"><button onclick="lset('m',-1,1,60)">−</button><b>${LS.m}</b><button onclick="lset('m',1,1,60)">+</button></span></div>
+  <div class="card row">Шпион саны<span class="num"><button onclick="lset('s',-1,1,3)">−</button><b>${LS.s}</b><button onclick="lset('s',1,1,3)">+</button></span></div>
+  <div class="card row">Адасқан режимі<button onclick="LS.lost=!LS.lost;localSetup()">${LS.lost ? 'Иә' : 'Жоқ'}</button></div>
+  <div class="card"><div class="muted" style="margin-bottom:10px">${LI.length ? LI.length + ' нұсқа (файл)' : 'Стандартты жинақ: ' + DEF.length + ' нұсқа'}</div>
+    <button style="width:100%" onclick="$('#f').click()">JSON / TXT файл таңдау</button>
+    ${LI.length ? `<button style="width:100%;margin-top:8px" onclick="LI=[];sv('li','[]');localSetup()">Стандартты жинаққа қайту</button>` : ''}</div>
+  <button class="main" onclick="lstart()">Ойнау</button><button onclick="localMode=false;render()">Артқа</button>`);
+}
+function lstart() {
+  const pool = LI.length ? LI : DEF, e = pool[rnd(pool.length)], n = LS.n;
+  const k = Math.max(1, Math.min(LS.s, (n - 1) >> 1)), ids = shuf([...Array(n).keys()]);
+  const lost = LS.lost && n >= 4 ? ids[k] : -1;
+  const same = pool.filter(x => x.game === e.game && x.place !== e.place), alt = same.length ? same : pool.filter(x => x.place !== e.place);
+  LG = {e, spies: ids.slice(0, k), lost, dp: lost >= 0 && alt.length ? alt[rnd(alt.length)] : e, roles: shuf(e.roles), i: 0, shown: false};
+  lreveal();
+}
+function lreveal() {
+  if (LG.i >= LS.n) return V(`<div class="card tap" style="min-height:40vh"><div class="big">Бәрі көрді</div><div class="muted">${LS.n} ойыншы · ${LS.m} мин</div></div><button class="main" onclick="lplay()">Ойынды бастау</button>`);
+  const i = LG.i, spy = LG.spies.includes(i), x = i === LG.lost ? LG.dp : LG.e, role = spy || !LG.roles.length ? '' : LG.roles[i % LG.roles.length];
+  const body = !LG.shown ? `<div class="big">${i + 1}-ойыншы</div><div class="muted">Көру үшін басыңыз</div>`
+    : spy ? `<div class="big">ШПИОН</div><div class="muted">Жасыру үшін басыңыз</div>`
+    : `${x.game ? `<div class="muted">Тақырып</div><div class="mid">${esc(x.game)}</div>` : ''}<div class="muted">${LG.e.roles.length ? 'Орын' : 'Сөз'}</div><div class="big">${esc(x.place)}</div>${role ? `<div class="muted">Рөл</div><div class="mid">${esc(role)}</div>` : ''}<div class="muted" style="margin-top:12px">Жасыру үшін басыңыз</div>`;
+  V(`<div class="card tap ${LG.shown && spy ? '' : ''}" style="min-height:65vh;user-select:none" onclick="ltap()">${body}</div>`);
+}
+function ltap() { if (LG.shown) { LG.shown = false; LG.i++; } else LG.shown = true; lreveal(); }
+function lplay() {
+  const end = Date.now() + LS.m * 6e4; let last = 99;
+  V(`<div class="card tap" style="min-height:50vh"><div class="muted">Ойын жүріп жатыр</div><div class="time" id="t">--:--</div></div><button class="main" onclick="lfinish(false)">Шпионды ашу</button><button onclick="localSetup()">Тоқтату</button>`);
+  lt = setInterval(() => {
+    const s = Math.ceil(Math.max(0, end - Date.now()) / 1000), t = $('#t'); if (t) t.textContent = mmss(s);
+    if (s <= 10 && s > 0 && s !== last) tone(660, 120);
+    last = s; if (!s) lfinish(true);
+  }, 250);
+}
+function lfinish(up) {
+  clearInterval(lt); const e = LG.e;
+  if (up) { tone(880, 700); navigator.vibrate && navigator.vibrate([300, 100, 300]); }
+  V(`<div class="card tap" style="min-height:50vh">${up ? '<div class="muted">Уақыт бітті</div>' : ''}
+    <div class="muted">Шпион</div><div class="big">${LG.spies.map(i => i + 1).sort((a, b) => a - b).join(', ')}-ойыншы</div>
+    ${LG.lost >= 0 ? `<div class="muted" style="margin-top:8px">Адасқан</div><div class="mid">${LG.lost + 1}-ойыншы (${esc(LG.dp.place)})</div>` : ''}
+    ${e.game ? `<div class="muted" style="margin-top:8px">Тақырып</div><div class="mid">${esc(e.game)}</div>` : ''}
+    <div class="muted">${e.roles.length ? 'Орын' : 'Сөз'}</div><div class="big">${esc(e.place)}</div></div>
+  <button class="main" onclick="lstart()">Қайта ойнау</button><button onclick="localSetup()">Баптаулар</button>`);
+}
+
 // ---------- іске қосу ----------
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
-if (sess) go({t: 'join', room: sess.code, id: sess.id, nick, ava});
+if (sess) go(jm({room: sess.code, id: sess.id}));
 render();
 </script>
 </body>

@@ -1,4 +1,4 @@
-const C = 'spy-v2';
+const C = 'spy-v3';
 self.addEventListener('install', e => { self.skipWaiting(); e.waitUntil(caches.open(C).then(c => c.addAll(['/', '/icon-192.png', '/icon-512.png'])).catch(() => {})); });
 self.addEventListener('activate', e => e.waitUntil(clients.claim()));
 self.addEventListener('fetch', e => {
