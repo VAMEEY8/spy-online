@@ -24,7 +24,7 @@ const newCode = () => { let c; do c = Array.from({ length: 4 }, () => 'ABCDEFGHJ
 
 function state(r, me) {
   return { t: 'state', code: r.code, you: me, host: r.host, phase: r.phase, minutes: r.minutes, spies: r.spies, hint: r.hint,
-    count: r.items.length, now: Date.now(), endAt: r.endAt || 0, result: r.result || null,
+    count: r.items.length, custom: !!r.custom, src: r.src || '', now: Date.now(), endAt: r.endAt || 0, result: r.result || null,
     caught: r.phase === 'guess' ? r.caught : null,
     players: [...r.players.values()].map(p => ({ id: p.id, nick: p.nick, ava: p.ava, score: p.score, on: !!p.ws, voice: p.voice, voted: p.id in r.votes })) };
 }
@@ -39,7 +39,7 @@ function join(ws, m) {
   }
   clearTimeout(r.del);
   let p = m.id && r.players.get(m.id);
-  if (p) p.ws = ws;
+  if (p) { p.ws = ws; clearTimeout(p.rm); }
   else {
     if (r.players.size >= 12) return send(ws, { t: 'err', m: 'Рум толы' });
     if (r.phase !== 'lobby') return send(ws, { t: 'err', m: 'Ойын басталып кетті' });
@@ -54,12 +54,21 @@ function join(ws, m) {
   push(r);
 }
 
-function leave(r, p, force) {
-  if (force || r.phase === 'lobby') r.players.delete(p.id);
-  if (r.host === p.id) { const n = active(r)[0]; r.host = n ? n.id : null; }
+const fixHost = r => { const h = r.players.get(r.host); if (!h || !h.ws) { const n = active(r)[0]; if (n) r.host = n.id; } };
+function idle(r) {
+  if (active(r).length) return;
   clearTimeout(r.del);
-  if (!active(r).length) r.del = setTimeout(() => { clearTimeout(r.timer); rooms.delete(r.code); }, 6e5);
-  else push(r);
+  r.del = setTimeout(() => { clearTimeout(r.timer); rooms.delete(r.code); }, 6e5);
+}
+// Байланыс үзілсе, ойыншы бірден өшірілмейді: 20 сек ішінде қайта кіре алады (файл таңдау, қолданба ауысу)
+function leave(r, p, force) {
+  if (force) { r.players.delete(p.id); fixHost(r); }
+  else p.rm = setTimeout(() => {
+    if (p.ws || r.players.get(p.id) !== p) return;
+    if (r.phase === 'lobby') r.players.delete(p.id);
+    fixHost(r); push(r); idle(r);
+  }, 20000);
+  push(r); idle(r);
 }
 
 function start(r) {
@@ -102,6 +111,7 @@ function handle(r, me, m) {
       if (host && r.phase === 'lobby' && Array.isArray(m.items)) {
         r.items = m.items.slice(0, 6000).map(x => ({ game: clean(x.game, 80), place: clean(x.place, 80),
           roles: Array.isArray(x.roles) ? x.roles.slice(0, 20).map(s => clean(s, 60)).filter(Boolean) : [] })).filter(x => x.place);
+        r.custom = !!m.custom; r.src = clean(m.name, 60);
         push(r);
       } break;
     case 'set':
@@ -125,10 +135,15 @@ function handle(r, me, m) {
         const ok = m.place === r.entry.place;
         finish(r, ok ? 'spy' : 'civ', ok ? 'Шпион орынды тапты' : 'Шпион орынды таба алмады');
       } break;
+    case 'skip': if (host && r.phase === 'guess') finish(r, 'civ', 'Шпион жауап бермеді'); break;
     case 'next':
       if (host && r.phase === 'result') { r.phase = 'lobby'; r.result = null; r.endAt = 0; r.players.forEach(p => p.card = null); push(r); }
       break;
-    case 'leave': { const w = me.ws; me.ws = null; if (w) w.room = null; leave(r, me, true); break; }
+    case 'leave': {
+      const w = me.ws; me.ws = null; if (w) w.room = null; leave(r, me, true);
+      if (r.spyIds && ['play', 'vote', 'guess'].includes(r.phase) && !r.spyIds.some(id => r.players.has(id))) finish(r, 'civ', 'Шпион ойыннан шықты');
+      break;
+    }
   }
 }
 
