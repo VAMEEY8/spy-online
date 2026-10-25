@@ -54,7 +54,13 @@ let nick = ls('nick', ''), ava = ls('ava', '🕵️'), sess = null;
 try { sess = JSON.parse(sessionStorage.getItem('sess') || 'null'); } catch (e) {}
 let ws, st = null, card = null, myid = null, off = 0, chat = [], guessOpen = false, lastPhase = '', myVote = null;
 let stream = null, pcs = {}, muted = false;
-const tx = o => ws && ws.readyState === 1 && ws.send(JSON.stringify(o));
+const q = [];  // байланыс үзілсе, маңызды хабарлар кезекке тұрады
+const tx = o => {
+  if (ws && ws.readyState === 1) return ws.send(JSON.stringify(o));
+  if (!sess || ['ping', 'sig', 'react', 'voice'].includes(o.t)) return;
+  if (o.t === 'items') { const i = q.findIndex(x => x.t === 'items'); if (i >= 0) q.splice(i, 1); }
+  q.push(o);
+};
 const av = a => String(a).startsWith('data:') ? `<img src="${a}">` : esc(a);
 const isHost = () => st.host === myid;
 const pl = id => st.players.find(p => p.id === id) || {nick: '?', ava: '❔'};
@@ -102,14 +108,18 @@ function go(msg) {
   const w = ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
   w.onopen = () => w.send(JSON.stringify(msg));
   w.onmessage = e => on(JSON.parse(e.data));
-  w.onclose = () => { if (w === ws && sess) setTimeout(() => go({t: 'join', room: sess.code, id: sess.id, nick, ava}), 1500); };
+  w.onclose = () => { if (w === ws && sess) { clearTimeout(retry); retry = setTimeout(rejoin, 700); } };
 }
+let retry;
+const rejoin = () => { if (sess && (!ws || ws.readyState > 1)) go({t: 'join', room: sess.code, id: sess.id, nick, ava}); };
+document.addEventListener('visibilitychange', () => { if (!document.hidden) rejoin(); });
 setInterval(() => tx({t: 'ping'}), 20000);
 
 function on(m) {
   if (m.t === 'joined') {
     myid = m.id; sess = {id: m.id, code: m.code}; sessionStorage.setItem('sess', JSON.stringify(sess));
     if (m.created) tx({t: 'items', items: DEF});
+    q.splice(0).forEach(tx);
   } else if (m.t === 'state') {
     st = m; off = m.now - Date.now();
     if (st.phase !== lastPhase) {
@@ -179,12 +189,13 @@ function set(k, d) {
   tx({t: 'set', ...v});
 }
 $('#f').onchange = async e => {
-  const all = [];
-  for (const f of e.target.files) all.push(...parseFile(await f.text()));
+  const files = [...e.target.files], all = [];
   e.target.value = '';
+  for (const f of files) all.push(...parseFile(await f.text()));
   if (!all.length) return alert('Файлда ештеңе табылмады');
   const seen = new Set();
-  tx({t: 'items', items: all.filter(x => { const k = x.game + '|' + x.place; return seen.has(k) ? false : seen.add(k); })});
+  tx({t: 'items', custom: true, name: files.map(f => f.name).join(', '),
+    items: all.filter(x => { const k = x.game + '|' + x.place; return seen.has(k) ? false : seen.add(k); })});
 };
 
 function lobby(v) {
@@ -196,7 +207,7 @@ function lobby(v) {
     <div class="row">Таймер (мин)<span class="num"><button onclick="set('minutes',-1)">−</button><b>${st.minutes}</b><button onclick="set('minutes',1)">+</button></span></div>
     <div class="row" style="margin-top:10px">Шпион саны<span class="num"><button onclick="set('spies',-1)">−</button><b>${st.spies}</b><button onclick="set('spies',1)">+</button></span></div>
     <div class="row" style="margin-top:10px">Шпион тақырыпты көреді<button onclick="set('hint',0)">${st.hint ? 'Иә' : 'Жоқ'}</button></div>
-    <div class="muted" style="margin:10px 0">${st.count || DEF.length} нұсқа</div>
+    <div class="muted" style="margin:10px 0">${st.custom ? '✔ ' + esc(st.src) + ': ' + st.count + ' нұсқа' : 'Стандартты жинақ: ' + (st.count || DEF.length) + ' нұсқа'}</div>
     <button style="width:100%" onclick="$('#f').click()">JSON / TXT файл таңдау</button></div>
     <button class="main" onclick="tx({t:'start'})" ${n < 3 ? 'disabled' : ''}>Бастау (${n}/3+)</button>`
   : '<div class="muted" style="text-align:center">Хост бастауын күтіңіз…</div>'}
@@ -237,7 +248,7 @@ function voteV(v) {
 function guessV(v) {
   v.innerHTML = card && card.spy && st.caught === myid
     ? `<h1>Сені ұстады!</h1><div class="muted" style="text-align:center">Орынды тапсаң — ұтасың</div><div class="card">${opts()}</div>`
-    : `<h1>Шпион ұсталды</h1><div class="muted" style="text-align:center">${esc(pl(st.caught).nick)} орынды болжап жатыр…</div>`;
+    : `<h1>Шпион ұсталды</h1><div class="muted" style="text-align:center">${esc(pl(st.caught).nick)} орынды болжап жатыр…</div>${isHost() ? `<button onclick="tx({t:'skip'})">Өткізіп жіберу</button>` : ''}`;
 }
 function resultV(v) {
   const r = st.result, w = r.win === 'spy';
