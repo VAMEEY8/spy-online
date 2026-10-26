@@ -38,11 +38,18 @@ input{flex:1;width:100%;background:#1c1c1c;border:1px solid #444;color:#f2f2f2;b
 @keyframes up{to{transform:translateY(-260px);opacity:0}}
 html.light{filter:invert(1) hue-rotate(180deg)}html.light .ava,html.light .fl{filter:invert(1) hue-rotate(180deg)}
 .pl button{padding:2px 10px;font-size:14px}
+.modes{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:8px 0}.modes button{padding:10px 4px;font-size:15px}
+.grid{display:grid;grid-template-columns:repeat(5,1fr);gap:4px}
+.cell{padding:8px 1px;font-size:12px;min-height:54px;word-break:break-word}.cell:disabled{opacity:1}
+.c-red{border-color:#c0392b}.c-blue{border-color:#2980b9}.c-n{border-color:#999}.c-x{border-color:#fff;border-style:dashed}
+.rv.c-red{background:#7a2b2b}.rv.c-blue{background:#244a7a}.rv.c-n{background:#555}.rv.c-x{background:#000}
+.cv{width:100%;border-radius:12px;background:#fff;touch-action:none}html.light .cv{filter:invert(1) hue-rotate(180deg)}
+.ph{height:52px;border-radius:8px;vertical-align:middle;margin-right:8px}.cell .ph{display:block;width:100%;height:44px;object-fit:cover;margin:0 0 3px}.ph2{max-width:100%;max-height:34vh;border-radius:12px}
 </style>
 </head>
 <body>
 <div id="app"><div id="view"></div><div id="dock"></div></div>
-<input id="f" type="file" multiple hidden><input id="ph" type="file" accept="image/*" hidden>
+<input id="f" type="file" multiple hidden><input id="ph" type="file" accept="image/*" hidden><input id="pf" type="file" accept="image/*" hidden>
 <script>
 const $ = s => $d.querySelector(s), $d = document;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -125,7 +132,7 @@ function on(m) {
   } else if (m.t === 'state') {
     st = m; off = m.now - Date.now();
     if (st.phase !== lastPhase) {
-      if (st.phase === 'play') { navigator.vibrate && navigator.vibrate(200); guessOpen = false; keepAwake(); }
+      if (st.phase === 'play' || st.phase === 'g') { navigator.vibrate && navigator.vibrate(200); guessOpen = false; keepAwake(); }
       if (st.phase === 'vote') { myVote = null; tone(880, 500); navigator.vibrate && navigator.vibrate([200, 100, 200]); }
       if (st.phase === 'lobby') card = null;
       lastPhase = st.phase;
@@ -136,6 +143,10 @@ function on(m) {
   else if (m.t === 'react') float(m.e);
   else if (m.t === 'sig') onSig(m);
   else if (m.t === 'msg') al(m.m);
+  else if (m.t === 'imgs') { IM = m.map; }
+  else if (m.t === 'stroke') { for (const a of m.s) { const k = [...a, m.c]; SK.push(k); strokeLine(k); } }
+  else if (m.t === 'clear') { SK = []; redraw(); }
+  else if (m.t === 'strokes') { SK = m.list; redraw(); }
   else if (m.t === 'err') { sess = null; sessionStorage.removeItem('sess'); const w = ws; ws = null; w && w.close(); al(m.m); st = null; render(); dock(); }
 }
 async function keepAwake() { try { await navigator.wakeLock.request('screen'); } catch (e) {} }
@@ -143,7 +154,7 @@ async function keepAwake() { try { await navigator.wakeLock.request('screen'); }
 // ---------- экрандар ----------
 function render() {
   const v = $('#view');
-  if (!st) home(v); else ({lobby, play, vote: voteV, guess: guessV, result: resultV}[st.phase] || lobby)(v);
+  if (!st) home(v); else ({lobby, play, vote: voteV, guess: guessV, result: resultV, g: gameV}[st.phase] || lobby)(v);
   tr(v);
 }
 const pRow = p => `<div class="pl"><span class="ava">${av(p.ava)}</span><span>${esc(p.nick)}${st.host === p.id ? ' ★' : ''}</span><span class="muted">${p.ready && st.phase === 'lobby' ? '✓ ' : ''}${p.voice ? '🎤 ' : ''}${p.on ? '' : 'офлайн '}</span>${isHost() && st.phase === 'lobby' && p.id !== myid ? `<button onclick="tx({t:'kick',id:'${p.id}'})">✕</button>` : ''}<b>${p.score}</b></div>`;
@@ -191,8 +202,8 @@ function share() {
   else navigator.clipboard.writeText(u).then(() => al('Сілтеме көшірілді'));
 }
 function set(k, d) {
-  const v = {minutes: st.minutes, spies: st.spies, hint: st.hint, lost: st.lost};
-  if (k === 'hint' || k === 'lost') v[k] = !v[k]; else v[k] = Math.max(1, Math.min(k === 'spies' ? 3 : 60, v[k] + d));
+  const v = {minutes: st.minutes, spies: st.spies, hint: st.hint, lost: st.lost, game: st.game};
+  if (k === 'mode') { v.game = d === 'lost' ? 'spy' : d; v.lost = d === 'lost'; } else if (k === 'hint') v.hint = !v.hint; else v[k] = Math.max(1, Math.min(k === 'spies' ? 3 : 60, v[k] + d));
   tx({t: 'set', ...v});
 }
 $('#f').onchange = async e => {
@@ -206,18 +217,23 @@ $('#f').onchange = async e => {
 };
 
 function lobby(v) {
-  const h = isHost(), n = st.players.filter(p => p.on).length, rd = st.players.every(p => !p.on || p.ready || p.id === st.host), my = pl(myid);
+  const h = isHost(), n = st.players.filter(p => p.on).length, rd = st.players.every(p => !p.on || p.ready || p.id === st.host), my = pl(myid), mk = st.game === 'spy' ? (st.lost ? 'lost' : 'spy') : st.game, sp = st.game === 'spy', need = MODES[mk][2];
   v.innerHTML = `<h1>${st.code}</h1>
   <button onclick="share()">Сілтемені жіберу</button>
+  <div class="card"><div class="muted">Режим</div><div class="modes">${Object.keys(MODES).map(k => `<button class="${mk === k ? 'main' : ''}" ${h ? '' : 'disabled'} onclick="set('mode','${k}')">${MODES[k][lang === 'en' ? 3 : 0]}</button>`).join('')}</div><div class="muted">${MODES[mk][lang === 'en' ? 4 : 1]} · ${need}+</div></div>
+  <div class="card"><div class="row" style="font-size:16px"><span>Фото қосу</span><span class="muted">${st.photos || 0}</span></div>
+    <div class="row2" style="margin-top:8px"><input id="pn" placeholder="Аты (жауап)" maxlength="30" value="${esc(photoName)}" oninput="photoName=this.value"><button onclick="$('#pf').click()">Фото таңдау</button></div>
+    ${h && st.photos ? `<button style="width:100%;margin-top:8px" onclick="tx({t:'photos_clear'})">Фотоларды тазалау</button>` : ''}
+    <div class="muted" style="margin-top:6px">Фото «Шпион», «Кім мен?» және Codenames ойындарында қолданылады</div></div>
   <div class="card">${st.players.map(pRow).join('')}</div>
   ${h ? `<div class="card">
-    <div class="row">Таймер (мин)<span class="num"><button onclick="set('minutes',-1)">−</button><b>${st.minutes}</b><button onclick="set('minutes',1)">+</button></span></div>
+    ${sp ? `<div class="row">Таймер (мин)<span class="num"><button onclick="set('minutes',-1)">−</button><b>${st.minutes}</b><button onclick="set('minutes',1)">+</button></span></div>
     <div class="row" style="margin-top:10px">Шпион саны<span class="num"><button onclick="set('spies',-1)">−</button><b>${st.spies}</b><button onclick="set('spies',1)">+</button></span></div>
     <div class="row" style="margin-top:10px">Шпион тақырыпты көреді<button onclick="set('hint',0)">${st.hint ? 'Иә' : 'Жоқ'}</button></div>
-    <div class="row" style="margin-top:10px">Адасқан режимі<button onclick="set('lost',0)">${st.lost ? 'Иә' : 'Жоқ'}</button></div>
-    <div class="muted" style="margin:10px 0">${st.custom ? '✔ ' + esc(st.src) + ': ' + st.count + ' нұсқа' : 'Стандартты жинақ: ' + (st.count || DEF.length) + ' нұсқа'}</div>
+    ` : ''}
+    <div class="muted" style="margin:10px 0">${st.custom ? '✔ ' + esc(st.src || 'Фото') + ': ' + st.count + ' нұсқа' : 'Стандартты жинақ: ' + (st.count || DEF.length) + ' нұсқа'}</div>
     <button style="width:100%" onclick="$('#f').click()">JSON / TXT файл таңдау</button></div>
-    <button class="main" onclick="tx({t:'start'})" ${n < 3 || !rd ? 'disabled' : ''}>Бастау (${n}/3+)</button>${rd ? '' : '<div class="muted" style="text-align:center">Барлығы «Дайынмын» басуы керек</div>'}`
+    <button class="main" onclick="tx({t:'start'})" ${n < need || !rd ? 'disabled' : ''}>Бастау (${n}/${need}+)</button>${rd ? '' : '<div class="muted" style="text-align:center">Барлығы «Дайынмын» басуы керек</div>'}`
   : `<button class="${my.ready ? '' : 'main'}" onclick="tx({t:'ready',on:${!my.ready}})">${my.ready ? 'Дайын емеспін' : 'Дайынмын'}</button><div class="muted" style="text-align:center">Хост бастауын күтіңіз…</div>`}
   <button onclick="leave()">Шығу</button>`;
 }
@@ -245,7 +261,7 @@ function hold0(on) {
   if (!on) { e.innerHTML = '<div class="muted">Рөлді көру үшін басып тұрыңыз</div>'; return; }
   const g = card.game ? `<div class="muted">Тақырып</div><div class="mid">${esc(card.game)}</div>` : '';
   e.innerHTML = card.spy ? `<div class="big">ШПИОН</div>${g}`
-    : `${g}<div class="muted">${card.hasRoles ? 'Орын' : 'Сөз'}</div><div class="big">${esc(card.place)}</div>` +
+    : `${g}${card.img ? `<img class="ph2" src="${card.img}">` : ''}<div class="muted">${card.hasRoles ? 'Орын' : 'Сөз'}</div><div class="big">${esc(card.place)}</div>` +
       (card.role ? `<div class="muted">Рөл</div><div class="mid">${esc(card.role)}</div>` : '');
 }
 function vote(id) { myVote = id; tx({t: 'vote', target: id}); render(); }
@@ -275,9 +291,9 @@ function resultV(v) {
 let lastTick = 99;
 setInterval(() => {
   const t = $('#t'); if (!t || !st) return;
-  const s = Math.ceil(Math.max(0, st.endAt - (Date.now() + off)) / 1000);
+  const s = Math.ceil(Math.max(0, (st.phase === 'g' && st.g ? st.g.endAt : st.endAt) - (Date.now() + off)) / 1000);
   t.textContent = mmss(s);
-  if (st.phase === 'play' && s <= 10 && s > 0 && s !== lastTick) tone(660, 120);
+  if ((st.phase === 'play' || st.phase === 'g') && s <= 10 && s > 0 && s !== lastTick) tone(660, 120);
   lastTick = s;
 }, 250);
 
@@ -354,7 +370,13 @@ const stat = () => {
   $d.querySelectorAll('#view button').forEach(b => b.disabled = true);
 };
 let lang = ls('lang', 'kk'), ac;
-const EN = {'ШПИОН':'SPY','Шпион':'Spy','Ник':'Nickname','Фото':'Photo','Рум құру':'Create room','КОД':'CODE','Кіру':'Join',
+const EN = {'Режим':'Mode','Фото қосу':'Add photo','Фото таңдау':'Choose photo','Аты (жауап)':'Name (the answer)','Фотоларды тазалау':'Clear photos','Фото «Шпион», «Кім мен?» және Codenames ойындарында қолданылады':'Photos are used in Spy, Who am I? and Codenames','Рөлің':'Your role','Мафия':'Mafia','Дәрігер':'Doctor','Комиссар':'Detective','Тұрғын':'Civilian','Мафия жеңді':'Mafia wins','Тұрғындар жеңді':'Town wins',
+'Кімді өлтіресің?':'Who do you kill?','Кімді құтқарасың?':'Who do you save?','Кімді тексересің?':'Who do you check?','Кім мафия?':'Who is the mafia?',
+'Түн. Көзіңді жұм, таң атқанша күт':'Night. Close your eyes until dawn','Таңдау жасалды. Күт…':'Choice made. Wait…','Сен өлдің. Үнсіз бақыла':'You are dead. Watch silently',
+'Талқылаңдар: мафия кім?':'Discuss: who is the mafia?','Таңды бастау':'Start the dawn','Нәтиже':'Result','Аяқтау':'Finish','Келесі':'Next','Лоббиге оралу':'Back to lobby','Ойынды тоқтату':'Stop game',
+'Мен кіммін?':'Who am I?','Ишара сөзі':'Clue word','Кезекті аяқтау':'End turn','Ойын аяқталды':'Game over','Жіберу':'Submit','Өтірік':'Lie','Қайсысы өтірік?':'Which one is the lie?',
+'Өзің туралы 3 сөйлем жаз: 2 шындық, 1 өтірік':'Write 3 sentences about yourself: 2 truths, 1 lie','Жауабыңды төмендегі чатқа жаз':'Type your guess in the chat below',
+'Сөзді айтуға болмайды!':'You cannot say the word!','Кемінде':'At least','ШПИОН':'SPY','Шпион':'Spy','Ник':'Nickname','Фото':'Photo','Рум құру':'Create room','КОД':'CODE','Кіру':'Join',
 'Құпиясөз (міндетті емес)':'Password (optional)','Бір телефонда ойнау':'Play on one phone','Қазақша':'Қазақша',
 'Сілтемені жіберу':'Share link','Таймер (мин)':'Timer (min)','Шпион саны':'Spies','Шпион тақырыпты көреді':'Spy sees the topic',
 'Адасқан режимі':'Lost player mode','Адасқан':'Lost player','Иә':'Yes','Жоқ':'No','JSON / TXT файл таңдау':'Choose JSON / TXT file',
@@ -457,6 +479,144 @@ function lfinish(up) {
     <div class="muted">${e.roles.length ? 'Орын' : 'Сөз'}</div><div class="big">${esc(e.place)}</div></div>
   <button class="main" onclick="lstart()">Қайта ойнау</button><button onclick="localSetup()">Баптаулар</button>`);
 }
+
+// ---------- қосымша ойындар (сервер логикасын басқарады, мұнда тек экран) ----------
+const MODES = {
+  spy: ['Шпион', 'Шпион бір ғана: ол өзін басқалардай көрсетіп, орынды табуы керек', 3, 'Spy', 'One spy blends in and must find the place'],
+  lost: ['Шпион + Адасқан', 'Шпион мен «адасқан» ойыншы (оған басқа сөз беріледі): екеуі де басқалардың не туралы айтып жатқанын табуы керек', 4, 'Spy + Lost', 'A spy and a lost player (different word) must work out what the others mean'],
+  mafia: ['Мафия', 'Түнде мафия өлтіреді, күндіз дауыс беріп табасыңдар', 5, 'Mafia', 'Mafia kills at night, town votes by day'],
+  who: ['Кім мен?', 'Өз кейіпкеріңді «иә/жоқ» сұрақтарымен тап', 2, 'Who am I?', 'Guess your own character with yes/no questions'],
+  code: ['Codenames', 'Екі команда: жетекші ишара береді, команда сөздерді табады', 4, 'Codenames', 'Two teams: captains give clues, teams find the words'],
+  draw: ['Крокодил', 'Біреу сурет салады, басқалар сөзді табады', 3, 'Draw & guess', 'One draws, the rest guess the word'],
+  truth: ['2 шындық 1 өтірік', 'Өтірікті тап', 3, '2 truths 1 lie', 'Find the lie'],
+};
+const act = (a, o) => tx({t: 'act', a, ...o});
+const RNK = {mafia: 'Мафия', doc: 'Дәрігер', com: 'Комиссар', civ: 'Тұрғын'};
+const nk2 = id => esc(pl(id).nick);
+const mid = t => `<div class="mid" style="text-align:center">${t}</div>`;
+const sm = t => `<div class="muted" style="text-align:center">${t}</div>`;
+const pickBtns = (ids, sel) => ids.map(id => `<button class="${sel === id ? 'main' : ''}" style="display:flex;align-items:center;gap:12px;width:100%" onclick="pk('${id}')"><span class="ava">${av(pl(id).ava)}</span>${nk2(id)}</button>`).join('');
+const pk = id => act(st.g.ph === 'vote' ? 'vote' : 'pick', {target: id});
+
+function gameV(v) {
+  const g = st.g; if (!g) return;
+  const ids = ['gi', 'cw', 'cn', 't0', 't1', 't2'], saved = ids.map(i => ($('#' + i) || {}).value), fid = $d.activeElement && $d.activeElement.id;
+  const body = {mafia: mafiaV, who: whoV, code: codeV, draw: drawV, truth: truthV}[st.game](g);
+  v.innerHTML = `<h1 style="font-size:26px">${esc(MODES[st.game][lang === 'en' ? 3 : 0])}</h1>
+  ${g.endAt ? '<div class="card tap" style="min-height:0"><div class="time" id="t" style="font-size:52px">--:--</div></div>' : ''}${body}
+  ${isHost() ? `<button class="${g.over ? 'main' : ''}" onclick="tx({t:'next'})">${g.over ? 'Лоббиге оралу' : 'Ойынды тоқтату'}</button>` : ''}
+  <div class="card">${[...st.players].sort((a, b) => b.score - a.score).map(pRow).join('')}</div>`;
+  ids.forEach((i, k) => { const e = $('#' + i); if (e && saved[k]) e.value = saved[k]; });
+  const f = fid && $('#' + fid); if (f && ids.includes(fid)) f.focus();
+  if (st.game === 'draw') bindCanvas(g);
+}
+
+function mafiaV(g) {
+  const alive = g.alive.includes(myid), h = [];
+  h.push(sm(`${g.day}-${g.ph === 'night' ? 'түн' : 'күн'}`), `<div class="card row"><span class="muted">Рөлің</span><b>${RNK[g.role]}${alive ? '' : ' · өлдің'}</b></div>`);
+  if (g.mates) h.push(sm('Мафия: ' + g.mates.map(nk2).join(', ')));
+  if (g.checks && g.checks.length) h.push(`<div class="card">${g.checks.map(c => `<div>${nk2(c.target)} — ${c.mafia ? 'МАФИЯ' : 'мафия емес'}</div>`).join('')}</div>`);
+  if (g.over) h.push(mid(g.over.win === 'mafia' ? 'Мафия жеңді' : 'Тұрғындар жеңді'), `<div class="card">${Object.keys(g.roles).map(id => `<div class="row">${nk2(id)}<b>${RNK[g.roles[id]]}</b></div>`).join('')}</div>`);
+  else if (g.ph === 'night') {
+    if (!alive) h.push(sm('Сен өлдің. Үнсіз бақыла'));
+    else if (g.role === 'civ') h.push(mid('Түн. Көзіңді жұм, таң атқанша күт'));
+    else if (g.acted) h.push(mid('Таңдау жасалды. Күт…'));
+    else h.push(mid({mafia: 'Кімді өлтіресің?', doc: 'Кімді құтқарасың?', com: 'Кімді тексересің?'}[g.role]),
+      pickBtns(g.alive.filter(id => g.role === 'mafia' ? !g.mates.includes(id) : g.role === 'com' ? id !== myid : true)));
+  } else if (g.ph === 'day') h.push(mid('Талқылаңдар: мафия кім?'));
+  else { if (alive) h.push(mid('Кім мафия?'), pickBtns(g.alive.filter(id => id !== myid), g.voted)); h.push(sm(`Дауыс берді: ${g.nVoted}`)); }
+  if (isHost() && !g.over) h.push(`<button onclick="act('force')">${{night: 'Таңды бастау', day: 'Дауыс беруді бастау', vote: 'Нәтиже'}[g.ph]}</button>`);
+  if (g.log.length) h.push(`<div class="card muted">${g.log.slice(-4).map(esc).join('<br>')}</div>`);
+  return h.join('');
+}
+
+function whoV(g) {
+  const me = g.players.find(p => p.id === myid);
+  return sm('Басқалардың кейіпкерін көресің, өзіңдікін көрмейсің. «Иә/жоқ» сұрақтарын чатта не дауыста қой, тапқанда жауабын жаз') +
+    g.players.map(p => `<div class="card row"><span>${nk2(p.id)}${p.found ? ' ✓' : ''}</span><b>${p.word ? im(p.word) + esc(p.word) : '???'}</b></div>`).join('') +
+    (!g.over && me && !me.found ? `<div class="row2"><input id="gi" maxlength="60" placeholder="Мен кіммін?" onkeydown="if(event.key==='Enter')whoGo()"><button onclick="whoGo()">➤</button></div>` : '') +
+    (isHost() && !g.over ? `<button onclick="act('force')">Аяқтау</button>` : '');
+}
+function whoGo() { const i = $('#gi'), t = i.value.trim(); if (t) { act('guess', {text: t}); i.value = ''; } }
+
+function codeV(g) {
+  const TC = {red: 'Қызыл', blue: 'Көк'}, myTurn = g.mine === g.turn, can = !g.over && myTurn && !g.cap && g.clue;
+  const names = c => Object.keys(g.team).filter(id => g.team[id] === c).map(id => nk2(id) + (g.caps[c] === id ? '★' : '')).join(', ');
+  return sm(`${g.over ? '' : 'Кезек: ' + TC[g.turn] + ' · '}Қызыл ${g.rem.red} / Көк ${g.rem.blue}`) +
+    `<div class="card"><div>🟥 ${names('red')}</div><div style="margin-top:6px">🟦 ${names('blue')}</div></div>` +
+    sm(`Командаң: ${TC[g.mine]}${g.cap ? ' · Жетекші ★' : ''}`) +
+    (g.over ? mid(g.over.win ? TC[g.over.win] + ' команда жеңді' : 'Ойын аяқталды') : '') +
+    (g.clue ? mid(`Ишара: ${esc(g.clue.w)} ${g.clue.n}`) + sm(`Қалған болжам: ${g.left}`) : '') +
+    `<div class="grid">${g.cells.map((c, i) => `<button class="cell ${c.c ? 'c-' + c.c : ''} ${c.s ? 'rv' : ''}" ${can && !c.s ? '' : 'disabled'} onclick="act('pick',{i:${i}})">${im(c.w)}${esc(c.w)}</button>`).join('')}</div>` +
+    (!g.over && g.cap && myTurn && !g.clue ? `<div class="row2"><input id="cw" maxlength="30" placeholder="Ишара сөзі"><input id="cn" type="number" min="0" max="9" value="1" style="max-width:72px"><button onclick="codeClue()">➤</button></div>` : '') +
+    (can ? `<button onclick="act('end')">Кезекті аяқтау</button>` : '') +
+    (isHost() && !g.over ? `<button onclick="act('force')">Аяқтау</button>` : '');
+}
+function codeClue() { const w = $('#cw').value.trim(); if (w) act('clue', {w, n: +$('#cn').value || 0}); }
+
+// ---- Крокодил: сурет салу ----
+let SK = [], penCol = '#000000', pend = [], pt = 0;
+const cvx = () => { const c = $('#cv'); return c && c.getContext && c.getContext('2d'); };
+function strokeLine(k) {
+  const x = cvx(); if (!x) return; const s = x.canvas.width / 1000;
+  x.strokeStyle = k[4] || '#000000'; x.lineWidth = k[4] === '#ffffff' ? 28 : 5; x.lineCap = 'round';
+  x.beginPath(); x.moveTo(k[0] * s, k[1] * s); x.lineTo(k[2] * s, k[3] * s); x.stroke();
+}
+function redraw() { const x = cvx(); if (!x) return; x.fillStyle = '#ffffff'; x.fillRect(0, 0, x.canvas.width, x.canvas.height); SK.forEach(strokeLine); }
+function flush() { if (pend.length) act('stroke', {s: pend.splice(0), c: penCol}); }
+function setPen(c) { flush(); penCol = c; }
+function bindCanvas(g) {
+  redraw();
+  const can = $('#cv'); if (!can || g.drawer !== myid || g.reveal || g.over) return;
+  let last = null;
+  const pos = e => { const b = can.getBoundingClientRect(); return [Math.round((e.clientX - b.left) / b.width * 1000), Math.round((e.clientY - b.top) / b.height * 1000)]; };
+  can.onpointerdown = e => { last = pos(e); can.setPointerCapture(e.pointerId); add([...last, ...last]); };
+  can.onpointermove = e => { if (!last) return; const p = pos(e); add([...last, ...p]); last = p; };
+  can.onpointerup = can.onpointercancel = () => { last = null; flush(); };
+}
+function add(seg) { pend.push(seg); const k = [...seg, penCol]; SK.push(k); strokeLine(k); if (!pt) pt = setTimeout(() => { pt = 0; flush(); }, 60); }
+function drawV(g) {
+  const dr = g.drawer === myid, pal = ['#000000', '#c0392b', '#2980b9', '#27ae60', '#f1c40f', '#ffffff'];
+  return sm(`${g.round}/${g.total} · сурет салады: ${nk2(g.drawer)}`) +
+    (g.word ? mid(dr && !g.reveal ? 'Сурет сал: ' + esc(g.word) : 'Сөз: ' + esc(g.word)) : mid('_ '.repeat(g.len).trim())) +
+    `<canvas id="cv" class="cv" width="640" height="640"></canvas>` +
+    (dr && !g.reveal && !g.over ? `<div class="row2" style="overflow-x:auto">${pal.map(c => `<button style="flex:none;background:${c};width:42px;height:42px;padding:0;color:#000" onclick="setPen('${c}')">${c === '#ffffff' ? '⌫' : ''}</button>`).join('')}<button style="flex:none" onclick="flush();SK=[];redraw();act('clear')">🗑</button></div>` : (g.reveal || g.over ? '' : sm('Жауабыңды төмендегі чатқа жаз')))
+    + (g.got.length ? sm('Тапты: ' + g.got.map(nk2).join(', ')) : '') + (isHost() && !g.over ? `<button onclick="act('force')">Аяқтау</button>` : '');
+}
+
+// ---- 2 шындық 1 өтірік ----
+let lieIdx = 2;
+function setLie(i) { lieIdx = i; [0, 1, 2].forEach(k => $('#lb' + k).className = k === i ? 'main' : ''); }
+function truthGo() { const st = [0, 1, 2].map(i => $('#t' + i).value.trim()); if (st.some(x => !x)) return al('Үш сөйлемді де жазыңыз'); act('submit', {st, lie: lieIdx}); }
+function truthV(g) {
+  const tl = g.teller === myid; let h = sm(`${g.round}/${g.total} · ${nk2(g.teller)}`);
+  if (g.over) return h + mid('Ойын аяқталды');
+  if (g.ph === 'write') h += tl
+    ? mid('Өзің туралы 3 сөйлем жаз: 2 шындық, 1 өтірік') + [0, 1, 2].map(i => `<div class="row2"><input id="t${i}" maxlength="120" placeholder="${i + 1}-сөйлем"><button id="lb${i}" class="${lieIdx === i ? 'main' : ''}" onclick="setLie(${i})">Өтірік</button></div>`).join('') + `<button class="main" onclick="truthGo()">Жіберу</button>`
+    : sm(`${nk2(g.teller)} сөйлемдер жазып жатыр…`);
+  else if (g.ph === 'vote') {
+    h += mid('Қайсысы өтірік?') + g.st.map((s, i) => `<button style="width:100%" ${tl || g.voted ? 'disabled' : ''} onclick="act('vote',{i:${i}})">${esc(s)}</button>`).join('') + sm(`Дауыс берді: ${g.nVoted}`);
+    if (isHost()) h += `<button onclick="act('force')">Нәтиже</button>`;
+  } else {
+    h += g.st.map((s, i) => `<div class="card"><div>${i === g.lie ? '❌ ' : '✓ '}${esc(s)}</div><div class="muted">${Object.keys(g.votes).filter(id => g.votes[id] === i).map(nk2).join(', ')}</div></div>`).join('');
+    if (isHost()) h += `<button class="main" onclick="act('next')">Келесі</button>`;
+  }
+  return h;
+}
+
+// ---------- өз фотоларың ----------
+let IM = {}, photoName = '';
+const im = w => IM[w] ? `<img class="ph" src="${IM[w]}">` : '';
+const toImg = (f, max, q) => new Promise(res => {
+  const i = new Image();
+  i.onload = () => { const k = Math.min(1, max / Math.max(i.width, i.height)), c = $d.createElement('canvas'); c.width = Math.round(i.width * k); c.height = Math.round(i.height * k); c.getContext('2d').drawImage(i, 0, 0, c.width, c.height); URL.revokeObjectURL(i.src); res(c.toDataURL('image/jpeg', q)); };
+  i.src = URL.createObjectURL(f);
+});
+$('#pf').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  const img = await toImg(f, 240, 0.6), name = photoName.trim() || f.name.replace(/\.[^.]+$/, '').slice(0, 30);
+  tx({t: 'photo', name, img}); photoName = '';
+};
 
 // ---------- іске қосу ----------
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});

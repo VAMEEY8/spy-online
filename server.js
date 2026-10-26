@@ -24,7 +24,7 @@ const newCode = () => { let c; do c = Array.from({ length: 4 }, () => 'ABCDEFGHJ
 
 function state(r, me) {
   return { t: 'state', code: r.code, you: me, host: r.host, phase: r.phase, minutes: r.minutes, spies: r.spies, hint: r.hint, lost: !!r.lost, game: r.game, g: r.phase === 'g' && r.g ? G[r.game].view(r, r.players.get(me)) : null,
-    count: r.items.length, custom: !!r.custom, src: r.src || '', now: Date.now(), endAt: r.endAt || 0, result: r.result || null,
+    count: r.items.length, custom: !!r.custom, src: r.src || '', photos: r.items.filter(x => x.img).length, now: Date.now(), endAt: r.endAt || 0, result: r.result || null,
     caught: r.phase === 'guess' ? r.caught : null,
     players: [...r.players.values()].map(p => ({ id: p.id, nick: p.nick, ava: p.ava, score: p.score, on: !!p.ws, voice: p.voice, voted: p.id in r.votes, ready: !!p.ready })) };
 }
@@ -55,6 +55,7 @@ function join(ws, m) {
   send(ws, { t: 'joined', id: p.id, code: r.code, created });
   if (p.card) send(ws, p.card);
   if (r.phase === 'g' && r.game === 'draw' && r.g) send(ws, { t: 'strokes', list: r.g.strokes });
+  if (r.phase === 'g' && r.imgMap) send(ws, { t: 'imgs', map: r.imgMap });
   push(r);
 }
 
@@ -91,7 +92,7 @@ function start(r) {
   let i = 0;
   r.players.forEach(p => {
     const spy = r.spyIds.includes(p.id);
-    p.card = { t: 'role', spy, hasRoles: e.roles.length > 0, game: spy && !r.hint ? '' : e.game, place: spy ? '' : (p.id === r.lostId ? dp.place : e.place),
+    p.card = { t: 'role', spy, hasRoles: e.roles.length > 0, game: spy && !r.hint ? '' : e.game, place: spy ? '' : (p.id === r.lostId ? dp.place : e.place), img: spy ? '' : ((p.id === r.lostId ? dp.img : e.img) || ''),
       role: spy || !roles.length ? '' : roles[i++ % roles.length], opts: spy ? opts : null };
     send(p.ws, p.card);
   });
@@ -183,7 +184,7 @@ G.mafia = {
 G.who = {
   min: 2,
   start(r) {
-    const src = r.custom ? pool(r) : shuffle(CHARS), ids = active(r).map(p => p.id), word = {};
+    const own = [...new Set(r.items.map(x => x.place))], ids = active(r).map(p => p.id), src = r.custom ? (own.length >= ids.length ? shuffle(own) : pool(r)) : shuffle(CHARS), word = {};
     ids.forEach((id, i) => word[id] = src[i % src.length]);
     r.g = { word, ids, found: [], over: null };
     tm(r, 600, () => { over(r, { done: 1 }); push(r); });
@@ -312,7 +313,14 @@ function startG(r) {
   const gm = G[r.game], ps = active(r), hw = r.players.get(r.host).ws;
   if (ps.length < gm.min) return send(hw, { t: 'msg', m: 'Кемінде ' + gm.min + ' ойыншы керек' });
   if (!ps.every(p => p.ready || p.id === r.host)) return send(hw, { t: 'msg', m: 'Барлығы дайын емес' });
-  r.players.forEach(p => p.ready = false); r.phase = 'g'; r.result = null; gm.start(r); push(r);
+  r.players.forEach(p => p.ready = false); r.phase = 'g'; r.result = null; gm.start(r); sendImgs(r); push(r);
+}
+// Фото-карталар: тек осы ойында қолданылатын суреттер бір рет жіберіледі
+function sendImgs(r) {
+  const used = r.game === 'who' ? Object.values(r.g.word) : r.game === 'code' ? r.g.words : [], map = {};
+  r.items.forEach(x => { if (x.img && used.includes(x.place)) map[x.place] = x.img; });
+  r.imgMap = Object.keys(map).length ? map : null;
+  if (r.imgMap) broadcast(r, { t: 'imgs', map });
 }
 
 function handle(r, me, m) {
@@ -320,9 +328,9 @@ function handle(r, me, m) {
   switch (m.t) {
     case 'items':
       if (host && r.phase === 'lobby' && Array.isArray(m.items)) {
-        r.items = m.items.slice(0, 6000).map(x => ({ game: clean(x.game, 80), place: clean(x.place, 80),
-          roles: Array.isArray(x.roles) ? x.roles.slice(0, 20).map(s => clean(s, 60)).filter(Boolean) : [] })).filter(x => x.place);
-        r.custom = !!m.custom; r.src = clean(m.name, 60);
+        const keep = r.items.filter(x => x.img); r.items = m.items.slice(0, 6000).map(x => ({ game: clean(x.game, 80), place: clean(x.place, 80),
+          roles: Array.isArray(x.roles) ? x.roles.slice(0, 20).map(s => clean(s, 60)).filter(Boolean) : [] })).filter(x => x.place).concat(keep);
+        r.custom = !!m.custom || keep.length > 0; r.src = clean(m.name, 60);
         push(r);
       } break;
     case 'set':
@@ -351,6 +359,20 @@ function handle(r, me, m) {
         finish(r, ok ? 'spy' : 'civ', ok ? 'Шпион орынды тапты' : 'Шпион орынды таба алмады');
       } break;
     case 'act': if (r.phase === 'g' && r.g && G[r.game].act(r, me, m) !== false) push(r); break;
+    case 'photo': {
+      const img = String(m.img || '');
+      if (r.phase !== 'lobby' || !img.startsWith('data:image/') || img.length > 60000 || r.items.filter(x => x.img).length >= 60) break;
+      if (!r.custom) r.items = [];  // әдепкі сөздер өз фотоларың келгенде алынады
+      const base = clean(m.name, 30) || 'Сурет'; let name = base, n = 2;
+      while (r.items.some(x => x.place === name)) name = base + ' ' + n++;
+      r.items.push({ game: 'Фото', place: name, roles: [], img }); r.custom = true; push(r); break;
+    }
+    case 'photos_clear':
+      if (host && r.phase === 'lobby') {
+        r.items = r.items.filter(x => !x.img); r.custom = !!r.src;
+        if (!r.items.length) { r.items = DEF.slice(); r.custom = false; }
+        push(r);
+      } break;
     case 'ready': if (r.phase === 'lobby') { me.ready = !!m.on; push(r); } break;
     case 'kick': {
       const k = host && r.phase === 'lobby' && m.id !== me.id && r.players.get(m.id);
@@ -359,7 +381,7 @@ function handle(r, me, m) {
     }
     case 'skip': if (host && r.phase === 'guess') finish(r, 'civ', 'Шпион жауап бермеді'); break;
     case 'next':
-      if (host && (r.phase === 'result' || (r.phase === 'g' && r.g.over))) { r.g = null; clearTimeout(r.timer); r.phase = 'lobby'; r.result = null; r.endAt = 0; r.players.forEach(p => { p.card = null; p.ready = false; }); push(r); }
+      if (host && (r.phase === 'result' || r.phase === 'g')) { r.g = null; clearTimeout(r.timer); r.phase = 'lobby'; r.result = null; r.endAt = 0; r.players.forEach(p => { p.card = null; p.ready = false; }); push(r); }
       break;
     case 'leave': {
       const w = me.ws; me.ws = null; if (w) w.room = null; leave(r, me, true);
